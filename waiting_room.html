@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kitchen Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.min.js"></script>
+</head>
+<body class="admin-page">
+
+  <div class="admin-header">
+    <div class="admin-logo">👨‍🍳</div>
+    <div>
+      <h1 class="admin-title">Kitchen Dashboard</h1>
+      <p class="admin-sub">Smart Canteen – Administrator View</p>
+    </div>
+    <a href="/admin/stock" class="admin-logout-btn" style="background:rgba(100,180,255,.15);color:#64b5f6;border-color:rgba(100,180,255,.35);">📦 Manage Stock</a>
+    <a href="/admin_logout" class="admin-logout-btn">🚪 Logout</a>
+    <div class="admin-queue-info">
+      <span class="queue-badge">MODULE 3: QUEUE</span>
+      <span id="tokenInfo" class="token-info">loading…</span>
+    </div>
+  </div>
+
+  <div class="admin-container" id="adminContainer">
+    <div class="no-orders" id="noOrders">
+      <span class="no-orders-icon">📋</span>
+      <p>No orders yet.<br>Orders will appear here in real time.</p>
+    </div>
+  </div>
+
+  <div class="module-legend">
+    <span>📦 <strong>MODULE 2: LINKED LIST</strong> – orders stored as nodes</span>
+    <span>🔢 <strong>MODULE 3: QUEUE</strong> – tokens 1-10 managed as FIFO queue</span>
+  </div>
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+
+  <script>
+  const CANCEL_WINDOW = 15;
+  const COOK_TIME     = 30;
+
+  // cardTimers keyed by order_id (not token) so reused tokens never collide
+  const cardTimers = {};
+  function registerTimer(oid, id) {
+    if (!cardTimers[oid]) cardTimers[oid] = [];
+    cardTimers[oid].push(id);
+  }
+  function stopTimers(oid) {
+    (cardTimers[oid] || []).forEach(id => clearInterval(id));
+    delete cardTimers[oid];
+  }
+
+  // ── Socket.IO ──────────────────────────────────────────────
+  const socket = io();
+  socket.on('connect', () => socket.emit('join_admin'));
+
+  socket.on('orders_update', (data) => renderOrders(data.orders));
+
+  socket.on('new_order', (order) => {
+    addOrderCard(order, false);
+    updateNoOrders();
+  });
+
+  socket.on('order_cancelled', (data) => {
+    const card = getCard(data.order_id, data.token);
+    if (card) {
+      stopTimers(data.order_id || String(data.token));
+      card.classList.add('card-cancelled');
+      card.querySelector('.card-status').textContent = '❌ Cancelled by customer';
+      setTimeout(() => card.remove(), 3000);
+    }
+    updateNoOrders();
+  });
+
+  socket.on('order_completed', (data) => {
+    const card = getCard(data.order_id, data.token);
+    if (card) {
+      stopTimers(data.order_id || String(data.token));
+      card.classList.add('card-completed');
+      card.querySelector('.card-status').textContent = '✅ Customer received the order successfully';
+    }
+    updateNoOrders();
+  });
+
+  socket.on('order_not_collected', (data) => {
+    const card = getCard(data.order_id, data.token);
+    if (card) {
+      stopTimers(data.order_id || String(data.token));
+      card.classList.add('card-not-collected');
+      card.querySelector('.card-status').textContent = "⚠️ Customer didn't receive the order";
+    }
+    updateNoOrders();
+  });
+
+  // ── Helpers ────────────────────────────────────────────────
+  // Card DOM id is based on order_id (unique). Fallback to token only if no order_id.
+  function cardId(order_id, token) {
+    return order_id ? 'card-oid-' + order_id : 'card-tok-' + token;
+  }
+  function getCard(order_id, token) {
+    if (order_id) return document.getElementById('card-oid-' + order_id);
+    return document.getElementById('card-tok-' + token);
+  }
+
+  function renderOrders(orders) {
+    document.querySelectorAll('.order-card').forEach(c => c.remove());
+    orders.forEach(o => addOrderCard(o, true));
+    updateNoOrders();
+  }
+
+  function addOrderCard(order, fromHistory) {
+    const container = document.getElementById('adminContainer');
+    const cid = cardId(order.order_id, order.token);
+
+    // Skip only exact duplicate (same order_id). Reused tokens are DIFFERENT order_ids.
+    if (document.getElementById(cid)) return;
+
+    const elapsed        = fromHistory ? Math.floor((Date.now()/1000) - order.timestamp) : 0;
+    const cancelLeft     = Math.max(0, CANCEL_WINDOW - elapsed);
+    const cookElapsed    = Math.max(0, elapsed - CANCEL_WINDOW);
+    const cookLeft       = Math.max(0, COOK_TIME - cookElapsed);
+    const isPending      = (order.status === 'Pending' || order.status === 'Cooking');
+
+    const itemsHtml = order.items.map(i =>
+      `<span class="order-item-chip">${i.name} &times; ${i.quantity}</span>`
+    ).join('');
+
+    let statusClass = '', statusText = '📋 Order received';
+    if (order.status === 'Cooking')       { statusText  = '🍳 Cooking…'; }
+    if (order.status === 'Ready')         { statusClass = 'status-ready';         statusText = '🔔 Ready for pickup'; }
+    if (order.status === 'Completed')     { statusClass = 'status-completed';     statusText = '✅ Customer received the order successfully'; }
+    if (order.status === 'NotCollected')  { statusClass = 'status-not-collected'; statusText = "⚠️ Customer didn't receive the order"; }
+    if (order.status === 'Cancelled')     { statusClass = 'status-cancelled';     statusText = '❌ Cancelled by customer'; }
+
+    const oid = order.order_id || '';
+
+    const card = document.createElement('div');
+    card.id        = cid;
+    card.className = 'order-card ' + statusClass;
+    card.innerHTML = `
+      <div class="card-top">
+        <div class="card-token">🎫 Token <span class="token-num">${order.token}</span></div>
+        <div class="card-customer">👤 ${order.customer}</div>
+      </div>
+      <div class="card-items">${itemsHtml}</div>
+      <div class="card-status" id="status-${cid}">${statusText}</div>
+      ${isPending ? `
+      <div class="cooking-zone" id="zone-${cid}">
+        <div class="cancel-wait-zone" id="cwait-${cid}">
+          <div class="cancel-wait-icon">⏳</div>
+          <div class="cancel-wait-text">Waiting for customer's 15-second cancel window…</div>
+          <div class="cancel-wait-bar-wrap">
+            <div class="cancel-wait-bar" id="cbar-${cid}" style="width:${cancelLeft/CANCEL_WINDOW*100}%"></div>
+          </div>
+          <span class="cancel-wait-num" id="cnum-${cid}">${cancelLeft}</span> s
+        </div>
+        <div class="cooking-timer-zone hidden" id="cook-${cid}">
+          <div class="cooking-timer-label">
+            <span class="queue-badge-sm">MODULE 3: QUEUE</span> Cooking timer (30 s):
+          </div>
+          <div class="cooking-bar-wrap">
+            <div class="cooking-bar" id="bar-${cid}" style="width:${cookLeft/COOK_TIME*100}%"></div>
+          </div>
+          <span class="cooking-num" id="num-${cid}">${cookLeft}</span> s remaining
+          <div class="give-order-wrap hidden" id="give-${cid}">
+            <button class="give-order-btn"
+                    onclick="giveOrder('${oid}',${order.token},'${cid}',this)">
+              🍽️ &nbsp;Give the Order
+            </button>
+          </div>
+        </div>
+      </div>` : ''}
+    `;
+    container.appendChild(card);
+
+    if (isPending) {
+      const timerKey = oid || String(order.token);
+      if (cancelLeft > 0) {
+        startCancelWait(cid, timerKey, cancelLeft);
+      } else {
+        showCookPhase(cid, timerKey, cookLeft);
+      }
+    }
+  }
+
+  function startCancelWait(cid, timerKey, secondsLeft) {
+    let rem = Math.ceil(secondsLeft);
+    const cbarEl = document.getElementById('cbar-' + cid);
+    const cnumEl = document.getElementById('cnum-' + cid);
+    if (!cbarEl) return;
+    cnumEl.textContent = rem;
+    const iv = setInterval(() => {
+      rem--;
+      if (cnumEl) cnumEl.textContent = Math.max(0, rem);
+      if (cbarEl) cbarEl.style.width = Math.max(0, rem/CANCEL_WINDOW*100) + '%';
+      if (rem <= 0) { clearInterval(iv); showCookPhase(cid, timerKey, COOK_TIME); }
+    }, 1000);
+    registerTimer(timerKey, iv);
+  }
+
+  function showCookPhase(cid, timerKey, cookLeft) {
+    const cwait = document.getElementById('cwait-' + cid);
+    const cook  = document.getElementById('cook-'  + cid);
+    const stEl  = document.getElementById('status-' + cid);
+    if (cwait) cwait.classList.add('hidden');
+    if (cook)  cook.classList.remove('hidden');
+    if (stEl && !stEl.textContent.includes('🍳')) stEl.textContent = '🍳 Cooking…';
+    if (cookLeft <= 0) {
+      const giveEl = document.getElementById('give-' + cid);
+      if (giveEl) giveEl.classList.remove('hidden');
+      return;
+    }
+    let rem = Math.ceil(cookLeft);
+    const barEl  = document.getElementById('bar-'  + cid);
+    const numEl  = document.getElementById('num-'  + cid);
+    const giveEl = document.getElementById('give-' + cid);
+    if (!barEl) return;
+    const iv = setInterval(() => {
+      rem--;
+      if (barEl) barEl.style.width = Math.max(0, rem/COOK_TIME*100) + '%';
+      if (numEl) numEl.textContent = Math.max(0, rem);
+      if (rem <= 0) { clearInterval(iv); if (giveEl) giveEl.classList.remove('hidden'); }
+    }, 1000);
+    registerTimer(timerKey, iv);
+  }
+
+  function giveOrder(oid, token, cid, btn) {
+    btn.disabled    = true;
+    btn.textContent = 'Order Given ✓';
+    socket.emit('give_order', { order_id: oid, token: token });
+    const stEl = document.getElementById('status-' + cid);
+    if (stEl) stEl.textContent = '🔔 Ready for pickup';
+    const card = document.getElementById(cid);
+    if (card) card.classList.add('status-ready');
+  }
+
+  function updateNoOrders() {
+    const cards = document.querySelectorAll('.order-card');
+    document.getElementById('noOrders').style.display =
+      cards.length === 0 ? 'flex' : 'none';
+  }
+  </script>
+</body>
+</html>

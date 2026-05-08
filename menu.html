@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Canteen – Order Status</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.min.js"></script>
+</head>
+<body class="status-page">
+  <script>
+    const CUSTOMER_TOKEN    = {{ token }};
+    const CUSTOMER_NAME     = "{{ name }}";
+    const CUSTOMER_ORDER_ID = "{{ order_id }}";
+  </script>
+
+  <div class="status-wrapper">
+
+    <!-- STATE 1: Confirmed flash -->
+    <div id="stateConfirmed" class="status-card hidden">
+      <div class="status-icon success-anim">🎉</div>
+      <h1 class="status-title">Order Placed Successfully!</h1>
+      <p class="status-sub">Your token number is</p>
+      <div class="token-badge" id="tokenDisplay"></div>
+      <p class="status-sub">Dear <strong id="nameDisplay"></strong>, your order has been received.</p>
+    </div>
+
+    <!-- STATE 2: 15-second cancel window (MODULE 4: STACK) -->
+    <div id="stateCancelWindow" class="status-card hidden">
+      <div class="status-icon">⏱️</div>
+      <h2 class="status-title">Order Placed!</h2>
+      <p class="status-sub">Token Number: <strong id="tokenDisplay2"></strong></p>
+      <div class="cancel-zone">
+        <div class="cancel-label">
+          <span class="cancel-badge">MODULE 4: STACK</span>
+          You can cancel your order within:
+        </div>
+        <div class="cancel-timer" id="cancelTimerDisplay">15</div>
+        <p class="cancel-timer-sub">seconds</p>
+        <button class="cancel-btn" id="cancelBtn" onclick="cancelOrder()">❌ &nbsp;Cancel Order</button>
+      </div>
+    </div>
+
+    <!-- STATE 3: 30-second prep timer (visual only) -->
+    <div id="stateWaiting" class="status-card hidden">
+      <div class="prep-ring">
+        <svg class="ring-svg" viewBox="0 0 120 120">
+          <circle class="ring-bg" cx="60" cy="60" r="50"/>
+          <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="50"
+                  stroke-dasharray="314" stroke-dashoffset="0"/>
+        </svg>
+        <span class="ring-num" id="prepTimerNum">30</span>
+      </div>
+      <p class="waiting-text">⏳ Please wait. Your order is being prepared…</p>
+      <p class="token-small">Token: <strong id="tokenDisplay3"></strong></p>
+      <p class="waiting-extra hidden" id="waitingExtra">
+        Almost done! Waiting for the kitchen to hand over your order…
+      </p>
+    </div>
+
+    <!-- STATE 4: Order Ready (ONLY via admin Give Order click) -->
+    <div id="stateReady" class="status-card hidden">
+      <div class="status-icon ready-bounce">🔔</div>
+      <h1 class="status-title ready-text">Your Order is Ready!</h1>
+      <p class="status-sub">
+        Dear customer having token number
+        <strong id="tokenDisplay4" class="token-inline"></strong>,
+        your order is ready. Kindly collect it.
+      </p>
+    </div>
+
+    <!-- STATE 5: Collection Prompt -->
+    <div id="stateCollect" class="status-card hidden">
+      <div class="status-icon">🛍️</div>
+      <h2 class="status-title">Did you collect your order?</h2>
+      <div class="collect-btns">
+        <button class="collect-yes" onclick="collected(true)">✅ Yes</button>
+        <button class="collect-no"  onclick="collected(false)">❌ No</button>
+      </div>
+    </div>
+
+    <!-- STATE 6a: Enjoy -->
+    <div id="stateEnjoy" class="status-card hidden">
+      <div class="status-icon enjoy-anim">🍽️</div>
+      <h1 class="status-title">Enjoy your food!</h1>
+      <p class="status-sub">Thank you for dining with us. 😊</p>
+      <a href="/" class="home-link">← Back to Home</a>
+    </div>
+
+    <!-- STATE 6b: Contact -->
+    <div id="stateContact" class="status-card hidden">
+      <div class="status-icon">📞</div>
+      <h2 class="status-title">Please contact us</h2>
+      <p class="status-sub">For order-related enquiries, call:</p>
+      <p class="contact-num">1234567890</p>
+      <a href="/" class="home-link">← Back to Home</a>
+    </div>
+
+  </div>
+
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+
+  <script>
+  const STATES = ['stateConfirmed','stateCancelWindow','stateWaiting',
+                  'stateReady','stateCollect','stateEnjoy','stateContact'];
+
+  function showState(id) {
+    STATES.forEach(s => document.getElementById(s).classList.add('hidden'));
+    document.getElementById(id).classList.remove('hidden');
+  }
+
+  let cancelInterval = null;
+  let prepInterval   = null;
+
+  // ── Socket.IO ─────────────────────────────────────────────
+  const socket = io();
+  socket.on('connect', () => {
+    // Join room keyed by order_id so reused tokens never cross-contaminate
+    socket.emit('join_customer', {
+      token:    CUSTOMER_TOKEN,
+      order_id: CUSTOMER_ORDER_ID
+    });
+  });
+
+  // Order ready ONLY when admin clicks "Give Order"
+  socket.on('order_ready', (data) => {
+    const myOrder = data.order_id === CUSTOMER_ORDER_ID ||
+                    (parseInt(data.token) === CUSTOMER_TOKEN && !data.order_id);
+    if (myOrder) {
+      clearInterval(prepInterval);
+      clearInterval(cancelInterval);
+      showReadyState();
+    }
+  });
+
+  // ── Main flow ─────────────────────────────────────────────
+  window.addEventListener('load', () => {
+    document.getElementById('tokenDisplay').textContent = CUSTOMER_TOKEN;
+    document.getElementById('nameDisplay').textContent  = CUSTOMER_NAME;
+    showState('stateConfirmed');
+    setTimeout(() => startCancelWindow(), 1000);
+  });
+
+  function startCancelWindow() {
+    document.getElementById('tokenDisplay2').textContent = CUSTOMER_TOKEN;
+    showState('stateCancelWindow');
+    let remaining = 15;
+    document.getElementById('cancelTimerDisplay').textContent = remaining;
+    cancelInterval = setInterval(() => {
+      remaining--;
+      document.getElementById('cancelTimerDisplay').textContent = remaining;
+      if (remaining <= 0) { clearInterval(cancelInterval); startPreparation(); }
+    }, 1000);
+  }
+
+  function startPreparation() {
+    document.getElementById('tokenDisplay3').textContent = CUSTOMER_TOKEN;
+    showState('stateWaiting');
+    const TOTAL = 30, CIRC = 314;
+    let elapsed = 0;
+    const ringFg = document.getElementById('ringFg');
+    const numEl  = document.getElementById('prepTimerNum');
+    prepInterval = setInterval(() => {
+      elapsed++;
+      numEl.textContent = Math.max(0, TOTAL - elapsed);
+      ringFg.style.strokeDashoffset = CIRC * (elapsed / TOTAL);
+      if (elapsed >= TOTAL) {
+        clearInterval(prepInterval);
+        document.getElementById('waitingExtra').classList.remove('hidden');
+        numEl.textContent = '✓';
+      }
+    }, 1000);
+  }
+
+  function showReadyState() {
+    document.getElementById('tokenDisplay4').textContent = CUSTOMER_TOKEN;
+    showState('stateReady');
+    setTimeout(() => showState('stateCollect'), 5000);
+  }
+
+  async function cancelOrder() {
+    const btn = document.getElementById('cancelBtn');
+    btn.disabled = true; btn.textContent = 'Cancelling…';
+    const res  = await fetch('/cancel_order', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: CUSTOMER_TOKEN, order_id: CUSTOMER_ORDER_ID })
+    });
+    const data = await res.json();
+    if (data.success) {
+      clearInterval(cancelInterval);
+      document.querySelector('#stateEnjoy .status-title').textContent = 'Order Cancelled';
+      document.querySelector('#stateEnjoy .status-sub').textContent =
+        'Your order has been cancelled. Token ' + CUSTOMER_TOKEN + ' is now free.';
+      showState('stateEnjoy');
+    } else {
+      alert(data.message || 'Could not cancel. Window may have expired.');
+      btn.disabled = false; btn.textContent = '❌ Cancel Order';
+    }
+  }
+
+  async function collected(yes) {
+    await fetch('/customer_confirmed', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: CUSTOMER_TOKEN, order_id: CUSTOMER_ORDER_ID, collected: yes })
+    });
+    showState(yes ? 'stateEnjoy' : 'stateContact');
+  }
+  </script>
+</body>
+</html>

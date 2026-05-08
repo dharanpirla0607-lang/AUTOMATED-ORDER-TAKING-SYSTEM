@@ -1,0 +1,589 @@
+# ============================================================
+# AUTOMATED ORDER TAKING SYSTEM
+# main application file  –  app.py
+# ------------------------------------------------------------
+# Run:  python app.py
+# URL:  http://127.0.0.1:5000
+#
+# Data-structure modules used:
+#   MODULE 1 – ARRAY        →  modules/menu_array.py
+#   MODULE 2 – LINKED LIST  →  modules/linkedlist_module.py
+#   MODULE 3 – QUEUE        →  modules/queue_module.py
+#   MODULE 4 – STACK        →  modules/stack_module.py
+# ============================================================
+
+import time
+import uuid
+from flask import (Flask, render_template, request,
+                   session, redirect, jsonify)
+from flask_socketio import SocketIO, emit, join_room
+
+# ── Module imports ──────────────────────────────────────────
+
+# MODULE 1: ARRAY – menu storage
+from modules.menu_array import (get_menu, get_menu_with_stock,
+                                get_item_by_id, is_out_of_stock,
+                                toggle_stock)
+
+# MODULE 2: LINKED LIST – active order storage
+from modules.linkedlist_module import OrderList
+
+# MODULE 3: QUEUE – token management (max 10 simultaneous tokens)
+from modules.queue_module import TokenQueue
+
+# MODULE 4: STACK – order cancellation within 15-second window
+from modules.stack_module import CancelStack
+
+# ── App setup ───────────────────────────────────────────────
+app = Flask(__name__)
+app.secret_key = "smart_canteen_secret_2024"
+
+# Socket.IO enables real-time push between customer & admin pages
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ── Data-structure instances ────────────────────────────────
+
+# MODULE 3: QUEUE – tokens 1-10 available at startup
+token_queue = TokenQueue(max_tokens=10)
+
+# MODULE 2: LINKED LIST – starts empty; orders appended as placed
+order_list = OrderList()
+
+# MODULE 4: STACK – tracks cancellable orders
+cancel_stack = CancelStack()
+
+
+# ============================================================
+# CUSTOMER  ROUTES
+# ============================================================
+
+@app.route('/')
+def login():
+    """Login page – choose Customer or Administrator."""
+    session.clear()
+    return render_template('login.html')
+
+
+@app.route('/customer')
+def customer():
+    """Customer name-entry page."""
+    return render_template('customer_name.html')
+
+
+@app.route('/menu')
+def menu():
+    """
+    Menu page – displays all food items with live stock status.
+    MODULE 1: ARRAY – get_menu_with_stock() returns the MENU list
+    with an in_stock flag derived from the OUT_OF_STOCK set.
+    """
+    name = request.args.get('name', '').strip()
+    if not name:
+        return redirect('/')
+    session['customer_name'] = name
+    session['cart'] = {}
+
+    menu_items = get_menu_with_stock()   # MODULE 1: ARRAY + stock set
+    return render_template('menu.html', menu=menu_items, name=name)
+
+
+@app.route('/update_cart', methods=['POST'])
+def update_cart():
+    """
+    BUG FIX: Accepts the ENTIRE cart dict in one request instead of
+    one-item-at-a-time, eliminating Flask session race conditions caused
+    by concurrent Promise.all() calls overwriting each other.
+
+    Expected payload: { "cart": { "1": 2, "6": 1, "12": 3 } }
+    """
+    data     = request.get_json()
+    new_cart = data.get('cart', {})
+
+    # Validate: only keep in-stock items with qty 1-3
+    clean_cart = {}
+    rejected   = []
+    for item_id_str, qty in new_cart.items():
+        try:
+            item_id = int(item_id_str)
+            qty     = int(qty)
+            if is_out_of_stock(item_id):
+                rejected.append(item_id)
+                continue
+            if 1 <= qty <= 3:
+                clean_cart[str(item_id_str)] = qty
+        except (ValueError, TypeError):
+            pass
+
+    session['cart'] = clean_cart
+    session.modified = True
+    return jsonify({'success': True, 'cart_size': len(clean_cart),
+                    'rejected': rejected})
+
+
+@app.route('/order_review')
+def order_review():
+    """
+    Order review page before checkout.
+    MODULE 2: LINKED LIST – the template visually shows the
+    linked-list structure of the customer's selected items.
+    """
+    name = session.get('customer_name', '')
+    cart = session.get('cart', {})
+
+    if not cart or not name:
+        return redirect('/')
+
+    # MODULE 1: ARRAY – look up each item by id
+    cart_items = []
+    for item_id_str, qty in cart.items():
+        item = get_item_by_id(int(item_id_str))
+        if item and qty > 0:
+            cart_items.append({'item': item, 'quantity': qty})
+
+    if not cart_items:
+        return redirect('/menu?name=' + name)
+
+    return render_template('order_review.html',
+                           cart_items=cart_items, name=name)
+
+
+@app.route('/checkout', methods=['POST'])
+def checkout():
+    """
+    Place the order:
+      MODULE 3: QUEUE       – dequeue next available token (1-10)
+      MODULE 2: LINKED LIST – append new order node
+      MODULE 4: STACK       – push cancellation record
+    Returns JSON with token number.
+    """
+    name = session.get('customer_name', '')
+    cart = session.get('cart', {})
+
+    if not cart or not name:
+        return jsonify({'success': False,
+                        'message': 'Session expired. Please start again.'})
+
+    # Guard: reject if any item went out-of-stock after menu was loaded
+    oos_names = []
+    for item_id_str in list(cart.keys()):
+        if is_out_of_stock(int(item_id_str)):
+            item = get_item_by_id(int(item_id_str))
+            oos_names.append(item['name'] if item else f'Item {item_id_str}')
+            cart.pop(item_id_str)
+    if oos_names:
+        session['cart'] = cart
+        session.modified = True
+        return jsonify({'success': False, 'out_of_stock': True,
+                        'items': oos_names,
+                        'message': f"{', '.join(oos_names)} went out of stock. "
+                                   f"Please update your cart."})
+
+    if not cart:
+        return jsonify({'success': False,
+                        'message': 'Your cart is empty after removing out-of-stock items.'})
+
+    # MODULE 3: QUEUE – get next free token
+    token = token_queue.get_token()
+    if token is None:
+        # All 10 slots busy – tell client to enter the waiting room
+        return jsonify({'success': False, 'waiting': True,
+                        'message': 'All 10 order slots are currently occupied.'})
+
+    # Build list of ordered items (MODULE 1: ARRAY lookup)
+    order_items = []
+    for item_id_str, qty in cart.items():
+        item = get_item_by_id(int(item_id_str))
+        if item and qty > 0:
+            order_items.append({'id': item['id'],
+                                'name': item['name'],
+                                'quantity': qty})
+
+    # Construct the order record
+    order_id = str(uuid.uuid4())          # unique per order even if token is reused
+    order = {
+        'order_id':  order_id,
+        'token':     token,
+        'customer':  name,
+        'items':     order_items,
+        'status':    'Pending',
+        'timestamp': time.time()
+    }
+
+    # MODULE 2: LINKED LIST – append order node at tail
+    order_list.add_order(order)
+
+    # MODULE 4: STACK – push so customer can cancel within 15 s
+    cancel_stack.push({'token': token, 'order_id': order_id, 'customer': name})
+
+    # Update session – store order_id so every subsequent call is exact
+    session['current_token']   = token
+    session['current_order_id'] = order_id
+    session['cart'] = {}
+    session.modified = True
+
+    # Real-time notification to admin room
+    socketio.emit('new_order', {
+        'order_id':  order_id,
+        'token':     token,
+        'customer':  name,
+        'items':     order_items,
+        'status':    'Pending',
+        'timestamp': time.time()
+    }, room='admin')
+
+    # Customer joins a room named by order_id (not token) so reused
+    # tokens never cross-contaminate between two different customers.
+    return jsonify({'success': True, 'token': token, 'order_id': order_id})
+
+
+@app.route('/cancel_order', methods=['POST'])
+def cancel_order():
+    """
+    Cancel an order within the 15-second window.
+      MODULE 4: STACK       – pop the cancellation record
+      MODULE 3: QUEUE       – return the token to the pool
+      MODULE 2: LINKED LIST – remove the order node
+    """
+    data  = request.get_json()
+    token = data.get('token')
+
+    if token is None:
+        return jsonify({'success': False, 'message': 'No token provided.'})
+
+    order_id = data.get('order_id') or session.get('current_order_id')
+
+    # MODULE 4: STACK – validate & pop by order_id
+    cancelled = cancel_stack.cancel_by_order_id(order_id) if order_id else False
+    if not cancelled:
+        cancelled = cancel_stack.cancel_token(token)   # fallback
+
+    if cancelled:
+        # MODULE 3: QUEUE – return token so others can reuse it
+        token_queue.return_token(token)
+
+        # MODULE 2: LINKED LIST – unlink exact order by order_id
+        if order_id:
+            order_list.remove_order_by_order_id(order_id)
+        else:
+            order_list.remove_order(token)
+
+        session.pop('current_token', None)
+        session.pop('current_order_id', None)
+        session.modified = True
+
+        # Notify admin with order_id so it removes the right card
+        socketio.emit('order_cancelled',
+                      {'token': token, 'order_id': order_id}, room='admin')
+        return jsonify({'success': True})
+    else:
+        return jsonify({'success': False,
+                        'message': 'Cancellation window has expired.'})
+
+
+@app.route('/order_status')
+def order_status():
+    """Customer waiting page – real-time updates via Socket.IO."""
+    token    = session.get('current_token')
+    order_id = session.get('current_order_id', '')
+    name     = session.get('customer_name', '')
+    if not token:
+        return redirect('/')
+    return render_template('order_status.html', token=token,
+                           name=name, order_id=order_id)
+
+
+@app.route('/customer_confirmed', methods=['POST'])
+def customer_confirmed():
+    """
+    Customer clicked Yes (collected) or No (not collected).
+      MODULE 2: LINKED LIST – update status to 'Completed'
+      MODULE 3: QUEUE       – return token to pool
+    """
+    data      = request.get_json()
+    token     = data.get('token')
+    order_id  = data.get('order_id') or session.get('current_order_id')
+    collected = data.get('collected', False)
+
+    if collected:
+        # MODULE 2: LINKED LIST – mark exact order as completed
+        if order_id:
+            order_list.update_status_by_order_id(order_id, 'Completed')
+        else:
+            order_list.update_status(token, 'Completed')
+
+        # MODULE 3: QUEUE – free the token slot
+        token_queue.return_token(token)
+
+        # Notify admin with order_id so the right card is updated
+        socketio.emit('order_completed',
+                      {'token': token, 'order_id': order_id}, room='admin')
+
+        orders = order_list.get_serializable_orders()
+        socketio.emit('orders_update', {'orders': orders}, room='admin')
+
+    else:
+        if order_id:
+            order_list.update_status_by_order_id(order_id, 'NotCollected')
+        else:
+            order_list.update_status(token, 'NotCollected')
+
+        socketio.emit('order_not_collected',
+                      {'token': token, 'order_id': order_id}, room='admin')
+
+    return jsonify({'success': True})
+
+
+@app.route('/waiting_room')
+def waiting_room():
+    """
+    Shown when all 10 tokens are occupied.
+    Keeps the customer's cart intact; client polls /claim_token
+    every 3 seconds until a token is freed.
+    """
+    name = session.get('customer_name', '')
+    if not name or not session.get('cart'):
+        return redirect('/')
+    return render_template('waiting_room.html', name=name)
+
+
+@app.route('/claim_token', methods=['POST'])
+def claim_token():
+    """
+    Polling endpoint called by the waiting-room page every 3 s.
+    Tries to dequeue a token; if successful, creates the order
+    exactly like /checkout does.
+      MODULE 3: QUEUE – get_token()
+      MODULE 2: LINKED LIST – add_order()
+      MODULE 4: STACK – push()
+    """
+    name = session.get('customer_name', '')
+    cart = session.get('cart', {})
+
+    if not name or not cart:
+        return jsonify({'success': False, 'message': 'Session expired.'})
+
+    # MODULE 3: QUEUE – try to grab a free token
+    token = token_queue.get_token()
+    if token is None:
+        # Still no free slot – client will try again in 3 s
+        return jsonify({'success': False, 'still_waiting': True,
+                        'active': token_queue.max_tokens - token_queue.available_count()})
+
+    # Build order items (MODULE 1: ARRAY lookup)
+    order_items = []
+    for item_id_str, qty in cart.items():
+        item = get_item_by_id(int(item_id_str))
+        if item and qty > 0:
+            order_items.append({'id': item['id'], 'name': item['name'],
+                                'quantity': qty})
+
+    order_id = str(uuid.uuid4())
+    order = {
+        'order_id':  order_id,
+        'token':     token,
+        'customer':  name,
+        'items':     order_items,
+        'status':    'Pending',
+        'timestamp': time.time()
+    }
+
+    # MODULE 2: LINKED LIST – append node
+    order_list.add_order(order)
+
+    # MODULE 4: STACK – push for cancellation window
+    cancel_stack.push({'token': token, 'order_id': order_id, 'customer': name})
+
+    session['current_token']    = token
+    session['current_order_id'] = order_id
+    session['cart'] = {}
+    session.modified = True
+
+    socketio.emit('new_order', {
+        'order_id':  order_id,
+        'token':     token,
+        'customer':  name,
+        'items':     order_items,
+        'status':    'Pending',
+        'timestamp': time.time()
+    }, room='admin')
+
+    return jsonify({'success': True, 'token': token, 'order_id': order_id})
+
+
+# ============================================================
+# ADMIN  ROUTES
+# ============================================================
+
+# Admin credentials – change these before deploying
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "canteen@123"
+
+
+def admin_required(f):
+    """Decorator: redirect to admin login if not authenticated."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect('/admin_login')
+        return f(*args, **kwargs)
+    return decorated
+
+
+
+
+# ============================================================
+# STOCK MANAGEMENT ROUTES
+# ============================================================
+
+@app.route('/admin/stock')
+@admin_required
+def stock_management():
+    """Admin stock management page – shows all items with toggle."""
+    menu_items = get_menu_with_stock()
+    return render_template('stock_management.html', menu=menu_items)
+
+
+@app.route('/toggle_stock', methods=['POST'])
+@admin_required
+def toggle_stock_route():
+    """
+    Toggle a menu item's stock status.
+    Broadcasts stock_update via Socket.IO so customer browsers
+    update in real-time without a page refresh.
+    """
+    data    = request.get_json()
+    item_id = data.get('item_id')
+    if not item_id:
+        return jsonify({'success': False, 'message': 'No item_id provided'})
+
+    item_id   = int(item_id)
+    now_oos   = toggle_stock(item_id)
+    item      = get_item_by_id(item_id)
+    item_name = item['name'] if item else str(item_id)
+
+    socketio.emit('stock_update', {
+        'item_id':   item_id,
+        'in_stock':  not now_oos,
+        'item_name': item_name
+    })
+
+    return jsonify({'success': True, 'in_stock': not now_oos,
+                    'item_name': item_name})
+
+
+@app.route('/get_stock')
+def get_stock():
+    """Returns current stock status for all items."""
+    from modules.menu_array import OUT_OF_STOCK
+    return jsonify({'out_of_stock': list(OUT_OF_STOCK)})
+
+
+@app.route('/admin_login', methods=['GET', 'POST'])
+def admin_login():
+    """Admin login page – verifies username & password."""
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            session.modified = True
+            return redirect('/admin')
+        else:
+            error = 'Invalid username or password. Please try again.'
+    return render_template('admin_login.html', error=error)
+
+
+@app.route('/admin_logout')
+def admin_logout():
+    """Log the admin out and return to home."""
+    session.pop('admin_logged_in', None)
+    session.modified = True
+    return redirect('/')
+
+
+@app.route('/admin')
+@admin_required
+def admin():
+    """Admin / kitchen dashboard page."""
+    return render_template('admin.html')
+
+
+@app.route('/get_orders')
+@admin_required
+def get_orders():
+    """REST fallback – returns all orders as JSON."""
+    # MODULE 2: LINKED LIST – traverse and serialise
+    return jsonify({'orders': order_list.get_serializable_orders()})
+
+
+# ============================================================
+# SOCKET.IO  EVENTS
+# ============================================================
+
+@socketio.on('join_admin')
+def on_join_admin():
+    """Admin page connects – joins 'admin' room & gets current orders."""
+    join_room('admin')
+    # MODULE 2: LINKED LIST – send existing orders on connect
+    orders = order_list.get_serializable_orders()
+    emit('orders_update', {'orders': orders})
+
+
+@socketio.on('join_customer')
+def on_join_customer(data):
+    """
+    Customer joins a room named by order_id (unique per order).
+    This ensures two customers who share the same reused token number
+    never receive each other's ready/cancelled notifications.
+    """
+    order_id = data.get('order_id')
+    token    = data.get('token')
+    if order_id:
+        join_room(f'order_{order_id}')
+    elif token:
+        join_room(f'customer_{token}')   # legacy fallback
+    emit('joined', {'token': token, 'order_id': order_id})
+
+
+@socketio.on('give_order')
+def on_give_order(data):
+    """
+    Admin clicks 'Give the order' button.
+      MODULE 2: LINKED LIST – update status to 'Ready'
+    Then push 'order_ready' event to the specific customer room.
+    """
+    token    = data.get('token')
+    order_id = data.get('order_id')
+
+    # MODULE 2: LINKED LIST – update exact order status
+    if order_id:
+        order_list.update_status_by_order_id(order_id, 'Ready')
+    else:
+        order_list.update_status(token, 'Ready')
+
+    # Push ready signal to the exact customer room (order_id based)
+    if order_id:
+        socketio.emit('order_ready', {'token': token, 'order_id': order_id},
+                      room=f'order_{order_id}')
+    else:
+        socketio.emit('order_ready', {'token': token},
+                      room=f'customer_{token}')
+
+    # Refresh admin's order list
+    orders = order_list.get_serializable_orders()
+    socketio.emit('orders_update', {'orders': orders}, room='admin')
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == '__main__':
+    print("=" * 55)
+    print("   AUTOMATED ORDER TAKING SYSTEM")
+    print("   http://127.0.0.1:5000")
+    print("=" * 55)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000,
+                 allow_unsafe_werkzeug=True)

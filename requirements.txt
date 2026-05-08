@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Canteen – Your Order</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="review-page">
+
+  <nav class="topbar">
+    <a href="/menu?name={{ name }}" class="topbar-back">← Back to Menu</a>
+    <h1 class="topbar-title">Your Order</h1>
+    <span class="topbar-greet">{{ name }}</span>
+  </nav>
+
+  <div class="review-container">
+
+    <!-- MODULE 2: LINKED LIST visual -->
+    <div class="ll-heading">
+      <span class="ll-badge">MODULE 2: LINKED LIST</span>
+      <p class="ll-desc">Your order items are stored as nodes in a linked list</p>
+    </div>
+
+    <div class="ll-chain">
+      {% for entry in cart_items %}
+      <div class="ll-node">
+        <div class="ll-node-inner">
+          <div class="ll-node-emoji">{{ entry.item.emoji }}</div>
+          <div class="ll-node-info">
+            <strong>{{ entry.item.name }}</strong>
+            <span class="ll-qty">× {{ entry.quantity }}</span>
+          </div>
+        </div>
+        <div class="ll-ptr-label">data | next →</div>
+      </div>
+      {% if not loop.last %}
+      <div class="ll-arrow">→</div>
+      {% else %}
+      <div class="ll-null">NULL</div>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+    <!-- Summary card with prices -->
+    <div class="review-summary">
+      <h2 class="review-sum-title">Order Summary</h2>
+
+      {% set total = namespace(val=0) %}
+      {% for entry in cart_items %}
+      {% set line_total = entry.item.price * entry.quantity %}
+      {% set total.val = total.val + line_total %}
+      <div class="review-row">
+        <span class="review-item-name">{{ entry.item.emoji }} {{ entry.item.name }}</span>
+        <span class="review-item-mid">× {{ entry.quantity }}</span>
+        <span class="review-item-price">₹ {{ line_total }}</span>
+      </div>
+      {% endfor %}
+
+      <div class="review-total-row">
+        <span class="review-total-label">Total Amount</span>
+        <span class="review-total-val">₹ {{ total.val }}</span>
+      </div>
+    </div>
+
+    <div class="checkout-wrap">
+      <button class="checkout-btn" id="checkoutBtn" onclick="doCheckout()">
+        ✅ &nbsp;Checkout
+      </button>
+    </div>
+
+  </div><!-- /.review-container -->
+
+  <!-- Developer credit – outside container, at page bottom -->
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+
+  <!-- 2-second placing overlay -->
+  <div class="placing-overlay hidden" id="placingOverlay">
+    <div class="placing-spinner">⏳</div>
+    <p class="placing-text">Placing your order…</p>
+  </div>
+
+  <script>
+    async function doCheckout() {
+      document.getElementById('checkoutBtn').disabled = true;
+      document.getElementById('placingOverlay').classList.remove('hidden');
+
+      await new Promise(r => setTimeout(r, 2000));   // 2-second delay
+
+      const res  = await fetch('/checkout', { method: 'POST' });
+      const data = await res.json();
+
+      if (data.success) {
+        window.location.href = '/order_status';
+      } else if (data.waiting) {
+        // All 10 slots full – go to waiting room (cart is preserved in session)
+        window.location.href = '/waiting_room';
+      } else {
+        document.getElementById('placingOverlay').classList.add('hidden');
+        document.getElementById('checkoutBtn').disabled = false;
+        alert(data.message || 'Something went wrong. Please try again.');
+      }
+    }
+  </script>
+
+</body>
+</html>

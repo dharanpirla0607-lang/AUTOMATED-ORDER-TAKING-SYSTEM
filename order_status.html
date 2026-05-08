@@ -1,0 +1,156 @@
+# ============================================================
+# MODULE 2: LINKED LIST  (Order Storage)
+# ------------------------------------------------------------
+# All active orders are stored as nodes in a singly linked list.
+# Each node holds one order dict and a pointer to the next node.
+# Supports:
+#   add_order(data)         → append node at tail   O(n)
+#   remove_order(token)     → delete node by token  O(n)
+#   update_status(token, s) → modify status field   O(n)
+#   get_order_by_token(t)   → find one order        O(n)
+#   get_orders()            → return list of dicts  O(n)
+# ============================================================
+
+class OrderNode:
+    """A single node in the Order Linked List."""
+
+    def __init__(self, data: dict):
+        self.data = data    # order dictionary
+        self.next = None    # pointer to next node (None = end of list)
+
+
+class OrderList:
+    """Singly linked list that stores all active customer orders."""
+
+    def __init__(self):
+        self.head = None    # head pointer; None means list is empty
+        self.size = 0
+
+    # ── INSERT ───────────────────────────────────────────────
+    def add_order(self, order_data: dict):
+        """Append a new order node at the tail of the list."""
+        new_node = OrderNode(order_data)
+
+        if self.head is None:           # list is empty – new node becomes head
+            self.head = new_node
+        else:
+            current = self.head
+            while current.next:         # traverse to the last node
+                current = current.next
+            current.next = new_node     # link last node to new node
+
+        self.size += 1
+
+    # ── DELETE ───────────────────────────────────────────────
+    def remove_order(self, token: int) -> bool:
+        """Remove the node whose order matches the given token."""
+        if self.head is None:
+            return False
+
+        # Special case: head node matches
+        if self.head.data['token'] == token:
+            self.head = self.head.next
+            self.size -= 1
+            return True
+
+        # Traverse to find the predecessor of the target node
+        current = self.head
+        while current.next:
+            if current.next.data['token'] == token:
+                current.next = current.next.next   # unlink target node
+                self.size -= 1
+                return True
+            current = current.next
+
+        return False    # token not found
+
+    # ── UPDATE ───────────────────────────────────────────────
+    def update_status(self, token: int, status: str) -> bool:
+        """Update the MOST RECENT active order matching token."""
+        # Traverse the entire list and update the last matching node
+        # so reused tokens always update the newest order, not the old one.
+        target = None
+        current = self.head
+        while current:
+            if current.data['token'] == token:
+                target = current   # keep overwriting → ends at last match
+            current = current.next
+        if target:
+            target.data['status'] = status
+            return True
+        return False
+
+    def update_status_by_order_id(self, order_id: str, status: str) -> bool:
+        """Update status using the unique order_id – always exact match."""
+        current = self.head
+        while current:
+            if current.data.get('order_id') == order_id:
+                current.data['status'] = status
+                return True
+            current = current.next
+        return False
+
+    def remove_order_by_order_id(self, order_id: str) -> bool:
+        """Remove the node whose order_id matches exactly."""
+        if self.head is None:
+            return False
+        if self.head.data.get('order_id') == order_id:
+            self.head = self.head.next
+            self.size -= 1
+            return True
+        current = self.head
+        while current.next:
+            if current.next.data.get('order_id') == order_id:
+                current.next = current.next.next
+                self.size -= 1
+                return True
+            current = current.next
+        return False
+
+    # ── SEARCH ───────────────────────────────────────────────
+    def get_order_by_token(self, token: int):
+        """Linear search – returns the MOST RECENT order for this token."""
+        result = None
+        current = self.head
+        while current:
+            if current.data['token'] == token:
+                result = current.data
+            current = current.next
+        return result
+
+    def get_order_by_order_id(self, order_id: str):
+        """Find an order by its unique order_id."""
+        current = self.head
+        while current:
+            if current.data.get('order_id') == order_id:
+                return current.data
+            current = current.next
+        return None
+
+    # ── TRAVERSE ─────────────────────────────────────────────
+    def get_orders(self) -> list:
+        """Traverse the list and return all order dicts as a Python list."""
+        orders = []
+        current = self.head
+        while current:
+            orders.append(current.data)
+            current = current.next
+        return orders
+
+    def get_serializable_orders(self) -> list:
+        """
+        Same as get_orders() but timestamps are converted to floats
+        so they can be JSON-serialised by Flask / Socket.IO.
+        """
+        orders = []
+        current = self.head
+        while current:
+            o = dict(current.data)
+            # ensure timestamp is a plain float
+            o['timestamp'] = float(o.get('timestamp', 0))
+            orders.append(o)
+            current = current.next
+        return orders
+
+    def is_empty(self) -> bool:
+        return self.head is None

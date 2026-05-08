@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Canteen – Menu</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.min.js"></script>
+</head>
+<body class="menu-page">
+
+  <nav class="topbar">
+    <a href="/" class="topbar-back">← Exit</a>
+    <h1 class="topbar-title">Menu</h1>
+    <span class="topbar-greet">Hi, {{ name }} 👋</span>
+  </nav>
+
+  <div class="menu-grid">
+    {% for item in menu %}
+    <div class="food-card {% if not item.in_stock %}card-oos{% endif %}"
+         id="food-card-{{ item.id }}"
+         data-id="{{ item.id }}"
+         data-in-stock="{{ '1' if item.in_stock else '0' }}">
+
+      <div class="food-img" style="background:{{ item.grad }}">
+        <span class="food-emoji">{{ item.emoji }}</span>
+        <div class="veg-badge"><span class="veg-dot"></span></div>
+
+        <!-- Out-of-stock overlay on image -->
+        <div class="oos-overlay {% if item.in_stock %}hidden{% endif %}"
+             id="oos-overlay-{{ item.id }}">
+          <span class="oos-overlay-text">Out of Stock</span>
+        </div>
+      </div>
+
+      <div class="food-body">
+        <h3 class="food-name">{{ item.name }}</h3>
+        <p class="food-desc">{{ item.description }}</p>
+        <p class="food-price">₹ {{ item.price }}</p>
+
+        <div class="order-area" id="order-area-{{ item.id }}">
+
+          <!-- Normal Order button (only shown when in stock) -->
+          <button
+            class="order-btn {% if not item.in_stock %}hidden{% endif %}"
+            onclick="startOrder({{ item.id }})"
+            id="order-btn-{{ item.id }}"
+          >Order</button>
+
+          <!-- Out-of-stock pill (only shown when out of stock) -->
+          <span class="oos-pill {% if item.in_stock %}hidden{% endif %}"
+                id="oos-pill-{{ item.id }}">
+            ❌ Out of Stock
+          </span>
+
+          <!-- Quantity selector (shown after Order clicked) -->
+          <div class="qty-selector hidden" id="qty-{{ item.id }}">
+            <button class="qty-btn minus-btn" onclick="changeQty({{ item.id }}, -1)">−</button>
+            <span class="qty-val" id="qty-val-{{ item.id }}">1</span>
+            <button class="qty-btn plus-btn"  onclick="changeQty({{ item.id }}, +1)">+</button>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="place-order-wrap hidden" id="placeOrderWrap">
+    <button class="place-order-btn" onclick="placeOrder()" id="placeBtn">
+      🛒 &nbsp;Place the Order
+      <span class="cart-badge" id="cartBadge">0</span>
+    </button>
+  </div>
+
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+
+  <script>
+    const cart = {};   // { "itemId": quantity }
+
+    // ── Socket.IO – real-time stock updates ──────────────────
+    const socket = io();
+    socket.on('stock_update', (data) => {
+      const id      = data.item_id;
+      const inStock = data.in_stock;
+
+      const card    = document.getElementById('food-card-'   + id);
+      const overlay = document.getElementById('oos-overlay-' + id);
+      const pill    = document.getElementById('oos-pill-'    + id);
+      const orderBtn= document.getElementById('order-btn-'   + id);
+      const qtyEl   = document.getElementById('qty-'         + id);
+
+      if (!card) return;
+
+      card.dataset.inStock = inStock ? '1' : '0';
+
+      if (inStock) {
+        // Item is back in stock
+        card.classList.remove('card-oos');
+        overlay.classList.add('hidden');
+        pill.classList.add('hidden');
+        // Only show Order button if qty selector isn't already open
+        if (qtyEl.classList.contains('hidden')) {
+          orderBtn.classList.remove('hidden');
+        }
+      } else {
+        // Item went out of stock – remove from cart if present
+        if (cart[String(id)]) {
+          delete cart[String(id)];
+          // Reset qty selector back to hidden, Order button re-hidden
+          qtyEl.classList.add('hidden');
+          document.getElementById('qty-val-' + id).textContent = 1;
+          updateCartUI();
+        }
+        card.classList.add('card-oos');
+        overlay.classList.remove('hidden');
+        orderBtn.classList.add('hidden');
+        qtyEl.classList.add('hidden');
+        pill.classList.remove('hidden');
+      }
+    });
+
+    // ── Cart logic ────────────────────────────────────────────
+    function startOrder(id) {
+      const card = document.getElementById('food-card-' + id);
+      if (card.dataset.inStock === '0') return;   // safety check
+
+      document.getElementById('order-btn-' + id).classList.add('hidden');
+      document.getElementById('qty-' + id).classList.remove('hidden');
+      cart[String(id)] = 1;
+      updateCartUI();
+    }
+
+    function changeQty(id, delta) {
+      const key     = String(id);
+      const current = cart[key] || 1;
+
+      if (current === 1 && delta === -1) {
+        // Deselect item
+        delete cart[key];
+        document.getElementById('qty-' + id).classList.add('hidden');
+        document.getElementById('order-btn-' + id).classList.remove('hidden');
+        document.getElementById('qty-val-' + id).textContent = 1;
+        updateCartUI();
+        return;
+      }
+
+      let q = current + delta;
+      if (q < 1) q = 1;
+      if (q > 3) q = 3;
+      cart[key] = q;
+      document.getElementById('qty-val-' + id).textContent = q;
+      updateCartUI();
+    }
+
+    function updateCartUI() {
+      const total = Object.keys(cart).length;
+      document.getElementById('cartBadge').textContent = total;
+      const wrap = document.getElementById('placeOrderWrap');
+      total > 0 ? wrap.classList.remove('hidden') : wrap.classList.add('hidden');
+    }
+
+    async function placeOrder() {
+      const btn = document.getElementById('placeBtn');
+      btn.disabled = true;
+      btn.innerHTML = '⏳ &nbsp;Saving cart…';
+
+      const res  = await fetch('/update_cart', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ cart: cart })
+      });
+      const data = await res.json();
+
+      // If server rejected some items (went OOS between load and click)
+      if (data.rejected && data.rejected.length > 0) {
+        data.rejected.forEach(id => {
+          delete cart[String(id)];
+          const qtyEl   = document.getElementById('qty-'       + id);
+          const orderBtn= document.getElementById('order-btn-' + id);
+          if (qtyEl)    qtyEl.classList.add('hidden');
+          if (orderBtn) orderBtn.classList.add('hidden');
+          // show OOS pill
+          const pill = document.getElementById('oos-pill-' + id);
+          if (pill) pill.classList.remove('hidden');
+        });
+        updateCartUI();
+        if (Object.keys(cart).length === 0) {
+          btn.disabled = false;
+          btn.innerHTML = '🛒 &nbsp;Place the Order <span class="cart-badge" id="cartBadge">0</span>';
+          alert('Some items in your cart went out of stock and were removed. Please select other items.');
+          return;
+        }
+        btn.disabled = false;
+        btn.innerHTML = '🛒 &nbsp;Place the Order <span class="cart-badge" id="cartBadge">' + Object.keys(cart).length + '</span>';
+        alert('Some out-of-stock items were removed from your cart. Please review and place order again.');
+        return;
+      }
+
+      window.location.href = '/order_review';
+    }
+  </script>
+
+</body>
+</html>

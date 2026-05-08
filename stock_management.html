@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin Login – Smart Canteen</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin-login-page">
+
+  <div class="al-wrapper">
+    <div class="al-card">
+
+      <div class="al-header">
+        <div class="al-icon">👨‍🍳</div>
+        <h1 class="al-title">Kitchen Dashboard</h1>
+        <p class="al-sub">Administrator Login</p>
+      </div>
+
+      {% if error %}
+      <div class="al-error">
+        ⚠️ &nbsp;{{ error }}
+      </div>
+      {% endif %}
+
+      <form method="POST" action="/admin_login" class="al-form">
+
+        <div class="al-field">
+          <label class="al-label" for="username">Username</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            class="al-input"
+            placeholder="Enter admin username"
+            autocomplete="username"
+            required
+          />
+        </div>
+
+        <div class="al-field">
+          <label class="al-label" for="password">Password</label>
+          <div class="al-pw-wrap">
+            <input
+              id="password"
+              name="password"
+              type="password"
+              class="al-input"
+              placeholder="Enter password"
+              autocomplete="current-password"
+              required
+            />
+            <button type="button" class="al-eye" onclick="togglePw()" title="Show / hide password">👁️</button>
+          </div>
+        </div>
+
+        <button type="submit" class="al-submit">
+          🔐 &nbsp;Login as Administrator
+        </button>
+
+      </form>
+
+      <div class="al-back">
+        <a href="/" class="al-back-link">← Back to Home</a>
+      </div>
+
+      <!-- Hint shown only in dev mode – remove before handing in if you want -->
+      <div class="al-hint">
+        Default credentials: &nbsp;<code>admin</code> / <code>canteen@123</code>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    function togglePw() {
+      const pw = document.getElementById('password');
+      pw.type = pw.type === 'password' ? 'text' : 'password';
+    }
+  </script>
+
+
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+</body>
+</html>

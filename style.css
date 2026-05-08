@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Stock Management – Smart Canteen</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin-page">
+
+  <div class="admin-header">
+    <div class="admin-logo">📦</div>
+    <div>
+      <h1 class="admin-title">Stock Management</h1>
+      <p class="admin-sub">Toggle item availability for customers</p>
+    </div>
+    <a href="/admin" class="admin-logout-btn" style="background:rgba(100,180,255,.15);color:#64b5f6;border-color:rgba(100,180,255,.35);">
+      ← Kitchen Dashboard
+    </a>
+    <a href="/admin_logout" class="admin-logout-btn">🚪 Logout</a>
+  </div>
+
+  <div class="stock-container">
+    {% for item in menu %}
+    <div class="stock-row {% if not item.in_stock %}stock-row-oos{% endif %}"
+         id="stock-row-{{ item.id }}">
+
+      <div class="stock-item-info">
+        <div class="stock-emoji">{{ item.emoji }}</div>
+        <div class="stock-details">
+          <div class="stock-name">{{ item.name }}</div>
+          <div class="stock-price">₹ {{ item.price }}</div>
+        </div>
+      </div>
+
+      <div class="stock-status-area">
+        <span class="stock-badge {% if item.in_stock %}badge-in{% else %}badge-oos{% endif %}"
+              id="badge-{{ item.id }}">
+          {% if item.in_stock %}✅ In Stock{% else %}❌ Out of Stock{% endif %}
+        </span>
+        <button
+          class="stock-toggle-btn {% if item.in_stock %}btn-mark-oos{% else %}btn-mark-in{% endif %}"
+          id="btn-{{ item.id }}"
+          onclick="toggleStock({{ item.id }}, this)"
+        >
+          {% if item.in_stock %}Mark Out of Stock{% else %}Mark Stock In{% endif %}
+        </button>
+      </div>
+
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+
+  <script>
+    async function toggleStock(itemId, btn) {
+      btn.disabled = true;
+      btn.textContent = 'Updating…';
+
+      const res  = await fetch('/toggle_stock', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ item_id: itemId })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        const inStock = data.in_stock;
+        const row     = document.getElementById('stock-row-' + itemId);
+        const badge   = document.getElementById('badge-'     + itemId);
+
+        // Update row style
+        row.classList.toggle('stock-row-oos', !inStock);
+
+        // Update badge
+        badge.className = 'stock-badge ' + (inStock ? 'badge-in' : 'badge-oos');
+        badge.textContent = inStock ? '✅ In Stock' : '❌ Out of Stock';
+
+        // Update button
+        btn.className = 'stock-toggle-btn ' + (inStock ? 'btn-mark-oos' : 'btn-mark-in');
+        btn.textContent = inStock ? 'Mark Out of Stock' : 'Mark Stock In';
+        btn.disabled = false;
+      } else {
+        alert('Failed to update stock status. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      }
+    }
+  </script>
+
+</body>
+</html>

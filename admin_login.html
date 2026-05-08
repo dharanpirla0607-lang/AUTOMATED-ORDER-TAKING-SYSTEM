@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Canteen – Welcome</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="name-page">
+
+  <div class="name-wrapper">
+    <div class="name-card">
+      <div class="name-header">
+        <a href="/" class="back-link">← Back</a>
+        <div class="name-icon">🙏</div>
+        <h1 class="name-title">Welcome!</h1>
+        <p class="name-sub">Please enter your name to continue</p>
+      </div>
+
+      <div class="name-form">
+        <label class="name-label" for="custName">Your Name</label>
+        <input
+          id="custName"
+          type="text"
+          class="name-input"
+          placeholder="e.g. Arjun Kumar"
+          maxlength="50"
+          autocomplete="off"
+        />
+
+        <a
+          id="continueBtn"
+          href="#"
+          class="continue-btn disabled"
+          onclick="return handleContinue(event)"
+        >
+          Continue &nbsp;→
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const input  = document.getElementById('custName');
+    const btn    = document.getElementById('continueBtn');
+
+    input.addEventListener('input', () => {
+      const hasName = input.value.trim().length > 0;
+      if (hasName) {
+        btn.classList.remove('disabled');
+      } else {
+        btn.classList.add('disabled');
+      }
+    });
+
+    function handleContinue(e) {
+      const name = input.value.trim();
+      if (!name) { e.preventDefault(); return false; }
+      window.location.href = '/menu?name=' + encodeURIComponent(name);
+      return false;
+    }
+  </script>
+
+
+  <div class="dev-credit">Developed by CS KARTHIK AND DHARAN</div>
+</body>
+</html>
